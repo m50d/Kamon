@@ -31,51 +31,58 @@ object CPUMetrics extends MetricGroupCategory {
   case object System extends MetricIdentity { val name = "system" }
   case object Wait extends MetricIdentity { val name = "wait" }
   case object Idle extends MetricIdentity { val name = "idle" }
+  case object Stolen extends MetricIdentity { val name = "stolen" }
 
-  case class CPUMetricRecorder(user: Histogram, system: Histogram, cpuWait: Histogram, idle: Histogram)
+  case class CPUMetricRecorder(user: Histogram, system: Histogram, cpuWait: Histogram, idle: Histogram, stolen: Histogram)
       extends MetricGroupRecorder {
 
     def collect(context: CollectionContext): MetricGroupSnapshot = {
-      CPUMetricSnapshot(user.collect(context), system.collect(context), cpuWait.collect(context), idle.collect(context))
+      CPUMetricSnapshot(user.collect(context), system.collect(context), cpuWait.collect(context), idle.collect(context), stolen.collect(context))
     }
 
     def cleanup: Unit = {}
   }
 
-  case class CPUMetricSnapshot(user: Histogram.Snapshot, system: Histogram.Snapshot, cpuWait: Histogram.Snapshot, idle: Histogram.Snapshot)
+  case class CPUMetricSnapshot(user: Histogram.Snapshot, system: Histogram.Snapshot, cpuWait: Histogram.Snapshot, idle: Histogram.Snapshot, stolen: Histogram.Snapshot)
       extends MetricGroupSnapshot {
 
     type GroupSnapshotType = CPUMetricSnapshot
 
     def merge(that: CPUMetricSnapshot, context: CollectionContext): GroupSnapshotType = {
-      CPUMetricSnapshot(user.merge(that.user, context), system.merge(that.system, context), cpuWait.merge(that.cpuWait, context), idle.merge(that.idle, context))
+      CPUMetricSnapshot(user.merge(that.user, context), system.merge(that.system, context), cpuWait.merge(that.cpuWait, context), idle.merge(that.idle, context), stolen.merge(that.stolen, context))
     }
 
     lazy val metrics: Map[MetricIdentity, MetricSnapshot] = Map(
       User -> user,
       System -> system,
       Wait -> cpuWait,
-      Idle -> idle)
+      Idle -> idle,
+      Stolen -> stolen)
   }
 
-  val Factory = new MetricGroupFactory {
-
-    type GroupRecorder = CPUMetricRecorder
-
-    def create(config: Config, system: ActorSystem): GroupRecorder = {
-      val settings = config.getConfig("precision.system.cpu")
-
-      val userConfig = settings.getConfig("user")
-      val systemConfig = settings.getConfig("system")
-      val cpuWaitConfig = settings.getConfig("wait")
-      val idleConfig = settings.getConfig("idle")
-
-      new CPUMetricRecorder(
-        Histogram.fromConfig(userConfig),
-        Histogram.fromConfig(systemConfig),
-        Histogram.fromConfig(cpuWaitConfig),
-        Histogram.fromConfig(idleConfig))
-    }
-  }
+  val Factory = CPUMetricGroupFactory
 }
 
+case object CPUMetricGroupFactory extends MetricGroupFactory {
+
+  import CPUMetrics._
+
+  type GroupRecorder = CPUMetricRecorder
+
+  def create(config: Config, system: ActorSystem): GroupRecorder = {
+    val settings = config.getConfig("precision.system.cpu")
+
+    val userConfig = settings.getConfig("user")
+    val systemConfig = settings.getConfig("system")
+    val cpuWaitConfig = settings.getConfig("wait")
+    val idleConfig = settings.getConfig("idle")
+    val stolenConfig = settings.getConfig("stolen")
+
+    new CPUMetricRecorder(
+      Histogram.fromConfig(userConfig),
+      Histogram.fromConfig(systemConfig),
+      Histogram.fromConfig(cpuWaitConfig),
+      Histogram.fromConfig(idleConfig),
+      Histogram.fromConfig(stolenConfig))
+  }
+}

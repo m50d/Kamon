@@ -17,7 +17,7 @@
 package kamon.metric
 
 import com.typesafe.config.ConfigFactory
-import kamon.Kamon
+import kamon.{ MilliTimestamp, Kamon }
 import kamon.metric.instrument.Histogram
 import kamon.metric.instrument.Histogram.MutableRecord
 import org.scalatest.{ Matchers, WordSpecLike }
@@ -55,8 +55,8 @@ class TickMetricSnapshotBufferSpec extends TestKitBase with WordSpecLike with Ma
       within(2 seconds)(expectNoMsg())
       val mergedSnapshot = expectMsgType[TickMetricSnapshot]
 
-      mergedSnapshot.from should equal(1000)
-      mergedSnapshot.to should equal(4000)
+      mergedSnapshot.from.millis should equal(1000)
+      mergedSnapshot.to.millis should equal(4000)
       mergedSnapshot.metrics should be('empty)
     }
 
@@ -70,8 +70,8 @@ class TickMetricSnapshotBufferSpec extends TestKitBase with WordSpecLike with Ma
       within(2 seconds)(expectNoMsg())
       val mergedSnapshot = expectMsgType[TickMetricSnapshot]
 
-      mergedSnapshot.from should equal(1000)
-      mergedSnapshot.to should equal(4000)
+      mergedSnapshot.from.millis should equal(1000)
+      mergedSnapshot.to.millis should equal(4000)
       mergedSnapshot.metrics should not be ('empty)
 
       val testMetricSnapshot = mergedSnapshot.metrics(testTraceIdentity).metrics(TraceMetrics.ElapsedTime).asInstanceOf[Histogram.Snapshot]
@@ -92,20 +92,20 @@ class TickMetricSnapshotBufferSpec extends TestKitBase with WordSpecLike with Ma
     val testTraceIdentity = TraceMetrics("buffer-spec-test-trace")
     val traceRecorder = Kamon(Metrics).register(testTraceIdentity, TraceMetrics.Factory).get
 
-    val firstEmpty = TickMetricSnapshot(1000, 2000, Map.empty)
-    val secondEmpty = TickMetricSnapshot(2000, 3000, Map.empty)
-    val thirdEmpty = TickMetricSnapshot(3000, 4000, Map.empty)
+    val firstEmpty = TickMetricSnapshot(new MilliTimestamp(1000), new MilliTimestamp(2000), Map.empty)
+    val secondEmpty = TickMetricSnapshot(new MilliTimestamp(2000), new MilliTimestamp(3000), Map.empty)
+    val thirdEmpty = TickMetricSnapshot(new MilliTimestamp(3000), new MilliTimestamp(4000), Map.empty)
 
     traceRecorder.elapsedTime.record(10L)
     traceRecorder.elapsedTime.record(20L)
     traceRecorder.elapsedTime.record(30L)
-    val firstNonEmpty = TickMetricSnapshot(1000, 2000, Map(
+    val firstNonEmpty = TickMetricSnapshot(new MilliTimestamp(1000), new MilliTimestamp(2000), Map(
       (testTraceIdentity -> traceRecorder.collect(collectionContext))))
 
     traceRecorder.elapsedTime.record(10L)
     traceRecorder.elapsedTime.record(10L)
     traceRecorder.elapsedTime.record(300L)
-    val secondNonEmpty = TickMetricSnapshot(1000, 2000, Map(
+    val secondNonEmpty = TickMetricSnapshot(new MilliTimestamp(1000), new MilliTimestamp(2000), Map(
       (testTraceIdentity -> traceRecorder.collect(collectionContext))))
   }
 }

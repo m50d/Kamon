@@ -16,6 +16,8 @@
 
 package kamon.trace
 
+import kamon.{ MilliTimestamp, RelativeNanoTimestamp, Kamon }
+
 import scala.language.experimental.macros
 import java.util.concurrent.atomic.AtomicLong
 import kamon.macros.InlineTraceContextMacro
@@ -23,54 +25,55 @@ import kamon.macros.InlineTraceContextMacro
 import scala.util.Try
 import java.net.InetAddress
 import akka.actor.ActorSystem
-import kamon.trace.TraceContext.SegmentIdentity
 
 object TraceRecorder {
-  private val traceContextStorage = new ThreadLocal[Option[TraceContext]] {
-    override def initialValue(): Option[TraceContext] = None
+  private val traceContextStorage = new ThreadLocal[TraceContext] {
+    override def initialValue(): TraceContext = EmptyTraceContext
   }
 
   private val tokenCounter = new AtomicLong
   private val hostnamePrefix = Try(InetAddress.getLocalHost.getHostName).getOrElse("unknown-localhost")
 
-  def newToken = "%s-%s".format(hostnamePrefix, tokenCounter.incrementAndGet())
+  def newToken: String = hostnamePrefix + "-" + String.valueOf(tokenCounter.incrementAndGet())
 
-  private def newTraceContext(name: String, token: Option[String], metadata: Map[String, String],
-    system: ActorSystem): TraceContext = {
+  private def newTraceContext(name: String, token: Option[String], system: ActorSystem): TraceContext =
+    Kamon(Trace)(system).newTraceContext(name, token.getOrElse(newToken), TraceContextOrigin.Local, system)
 
-    // In the future this should select between implementations.
-    val finalToken = token.getOrElse(newToken)
-    new SimpleMetricCollectionContext(name, finalToken, metadata, system)
+  def joinRemoteTraceContext(traceName: String, traceToken: String, startTimestamp: MilliTimestamp, isOpen: Boolean, system: ActorSystem): TraceContext = {
+    val equivalentStartTimestamp = RelativeNanoTimestamp.relativeTo(startTimestamp)
+    Kamon(Trace)(system).newTraceContext(traceName, traceToken, isOpen, TraceContextOrigin.Remote, equivalentStartTimestamp, system)
   }
 
-  def setContext(context: Option[TraceContext]): Unit = traceContextStorage.set(context)
+  def setContext(context: TraceContext): Unit = traceContextStorage.set(context)
 
-  def clearContext: Unit = traceContextStorage.set(None)
+  def clearContext: Unit = traceContextStorage.set(EmptyTraceContext)
 
-  def currentContext: Option[TraceContext] = traceContextStorage.get()
+  def currentContext: TraceContext = traceContextStorage.get()
 
-  def start(name: String, token: Option[String] = None, metadata: Map[String, String] = Map.empty)(implicit system: ActorSystem) = {
-    val ctx = newTraceContext(name, token, metadata, system)
-    traceContextStorage.set(Some(ctx))
+  def start(name: String, token: Option[String] = None)(implicit system: ActorSystem) = {
+    val ctx = newTraceContext(name, token, system)
+    traceContextStorage.set(ctx)
   }
 
-  def startSegment(identity: SegmentIdentity, metadata: Map[String, String] = Map.empty): Option[SegmentCompletionHandle] =
-    currentContext.map(_.startSegment(identity, metadata))
+  def rename(name: String): Unit = currentContext.rename(name)
 
-  def rename(name: String): Unit = currentContext.map(_.rename(name))
+  def withNewTraceContext[T](name: String, token: Option[String] = None)(thunk: ⇒ T)(implicit system: ActorSystem): T =
+    withTraceContext(newTraceContext(name, token, system))(thunk)
 
-  def withNewTraceContext[T](name: String, token: Option[String] = None, metadata: Map[String, String] = Map.empty)(thunk: ⇒ T)(implicit system: ActorSystem): T =
-    withTraceContext(Some(newTraceContext(name, token, metadata, system)))(thunk)
-
-  def withTraceContext[T](context: Option[TraceContext])(thunk: ⇒ T): T = {
+  def withTraceContext[T](context: TraceContext)(thunk: ⇒ T): T = {
     val oldContext = currentContext
     setContext(context)
 
     try thunk finally setContext(oldContext)
   }
 
-  def withInlineTraceContextReplacement[T](traceCtx: Option[TraceContext])(thunk: ⇒ T): T = macro InlineTraceContextMacro.withInlineTraceContextImpl[T, Option[TraceContext]]
+  def withTraceContextAndSystem[T](thunk: (TraceContext, ActorSystem) ⇒ T): Option[T] = currentContext match {
+    case ctx: MetricsOnlyContext ⇒ Some(thunk(ctx, ctx.system))
+    case EmptyTraceContext       ⇒ None
+  }
 
-  def finish(metadata: Map[String, String] = Map.empty): Unit = currentContext.map(_.finish(metadata))
+  def withInlineTraceContextReplacement[T](traceCtx: TraceContext)(thunk: ⇒ T): T = macro InlineTraceContextMacro.withInlineTraceContextImpl[T, TraceContext]
+
+  def finish(): Unit = currentContext.finish()
 
 }

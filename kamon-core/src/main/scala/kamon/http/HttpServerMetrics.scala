@@ -8,6 +8,8 @@ import kamon.metric._
 import scala.collection.concurrent.TrieMap
 
 object HttpServerMetrics extends MetricGroupIdentity {
+  import Metrics.AtomicGetOrElseUpdateForTriemap
+
   val name: String = "http-server-metrics-recorder"
   val category = new MetricGroupCategory {
     val name: String = "http-server"
@@ -32,13 +34,13 @@ object HttpServerMetrics extends MetricGroupIdentity {
     def recordResponse(statusCode: StatusCode): Unit = recordResponse(statusCode, 1L)
 
     def recordResponse(statusCode: StatusCode, count: Long): Unit =
-      counters.getOrElseUpdate(statusCode, Counter()).increment(count)
+      counters.atomicGetOrElseUpdate(statusCode, Counter()).increment(count)
 
     def recordResponse(traceName: TraceName, statusCode: StatusCode): Unit = recordResponse(traceName, statusCode, 1L)
 
     def recordResponse(traceName: TraceName, statusCode: StatusCode, count: Long): Unit = {
       recordResponse(statusCode, count)
-      countersPerTrace.getOrElseUpdate(traceName, TrieMap()).getOrElseUpdate(statusCode, Counter()).increment(count)
+      countersPerTrace.atomicGetOrElseUpdate(traceName, TrieMap()).atomicGetOrElseUpdate(statusCode, Counter()).increment(count)
     }
 
     def collect(context: CollectionContext): HttpServerMetricsSnapshot = {
@@ -82,11 +84,16 @@ object HttpServerMetrics extends MetricGroupIdentity {
     }
   }
 
-  val Factory = new MetricGroupFactory {
-    type GroupRecorder = HttpServerMetricsRecorder
+  val Factory = HttpServerMetricGroupFactory
+}
 
-    def create(config: Config, system: ActorSystem): HttpServerMetricsRecorder =
-      new HttpServerMetricsRecorder()
-  }
+case object HttpServerMetricGroupFactory extends MetricGroupFactory {
+
+  import HttpServerMetrics._
+
+  type GroupRecorder = HttpServerMetricsRecorder
+
+  def create(config: Config, system: ActorSystem): HttpServerMetricsRecorder =
+    new HttpServerMetricsRecorder()
 
 }

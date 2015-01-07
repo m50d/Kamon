@@ -15,18 +15,12 @@
 
 package kamon.play.instrumentation
 
-import kamon.trace.{ TraceContext, TraceContextAware }
+import kamon.trace.logging.MdcKeysSupport
 import org.aspectj.lang.ProceedingJoinPoint
 import org.aspectj.lang.annotation._
-import org.slf4j.MDC
 
 @Aspect
-class LoggerLikeInstrumentation {
-
-  import LoggerLikeInstrumentation._
-
-  @DeclareMixin("play.api.LoggerLike+")
-  def mixinContextAwareToLoggerLike: TraceContextAware = TraceContextAware.default
+class LoggerLikeInstrumentation extends MdcKeysSupport {
 
   @Pointcut("execution(* play.api.LoggerLike+.info(..))")
   def infoPointcut(): Unit = {}
@@ -40,31 +34,9 @@ class LoggerLikeInstrumentation {
   @Pointcut("execution(* play.api.LoggerLike+.trace(..))")
   def tracePointcut(): Unit = {}
 
-  @Around("(infoPointcut() || warnPointcut() || errorPointcut() || tracePointcut()) && this(logger)")
-  def aroundLog(pjp: ProceedingJoinPoint, logger: TraceContextAware): Any = {
-    withMDC(logger.traceContext) {
-      pjp.proceed()
-    }
-  }
-}
-
-object LoggerLikeInstrumentation {
-  def withMDC[A](currentContext: Option[TraceContext])(block: ⇒ A): A = {
-    val keys = currentContext.map(extractProperties).map(putAndExtractKeys)
-
-    try block finally keys.map(k ⇒ k.foreach(MDC.remove(_)))
-  }
-
-  def putAndExtractKeys(values: Iterable[Map[String, Any]]): Iterable[String] = values.map {
-    value ⇒ value.map { case (key, value) ⇒ MDC.put(key, value.toString); key }
-  }.flatten
-
-  def extractProperties(ctx: TraceContext): Iterable[Map[String, Any]] = ctx.traceLocalStorage.underlyingStorage.values.map {
-    case traceLocalValue @ (p: Product) ⇒ {
-      val properties = p.productIterator
-      traceLocalValue.getClass.getDeclaredFields.filter(field ⇒ field.getName != "$outer").map(_.getName -> properties.next).toMap
-    }
-    case anything ⇒ Map.empty[String, Any]
+  @Around("(infoPointcut() || warnPointcut() || errorPointcut() || tracePointcut())")
+  def aroundLog(pjp: ProceedingJoinPoint): Any = withMdc {
+    pjp.proceed()
   }
 }
 

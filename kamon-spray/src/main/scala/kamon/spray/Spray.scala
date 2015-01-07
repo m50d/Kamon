@@ -21,12 +21,14 @@ import akka.actor
 import kamon.Kamon
 import kamon.http.HttpServerMetrics
 import kamon.metric.Metrics
+import spray.http.HttpHeaders.Host
 import spray.http.HttpRequest
 
 object Spray extends ExtensionId[SprayExtension] with ExtensionIdProvider {
   def lookup(): ExtensionId[_ <: actor.Extension] = Spray
   def createExtension(system: ExtendedActorSystem): SprayExtension = new SprayExtension(system)
 
+  val SegmentLibraryName = "spray-client"
 }
 
 object ClientSegmentCollectionStrategy {
@@ -43,6 +45,9 @@ class SprayExtension(private val system: ExtendedActorSystem) extends Kamon.Exte
   val httpServerMetrics = Kamon(Metrics)(system).register(HttpServerMetrics, HttpServerMetrics.Factory).get
   // It's safe to assume that HttpServerMetrics will always exist because there is no particular filter for it.
 
+  private val nameGeneratorFQN = config.getString("name-generator")
+  private val nameGenerator: SprayNameGenerator = system.dynamicAccess.createInstanceFor[SprayNameGenerator](nameGeneratorFQN, Nil).get // let's bubble up any problems.
+
   val clientSegmentCollectionStrategy: ClientSegmentCollectionStrategy.Strategy =
     config.getString("client.segment-collection-strategy") match {
       case "pipelining" ⇒ ClientSegmentCollectionStrategy.Pipelining
@@ -51,6 +56,26 @@ class SprayExtension(private val system: ExtendedActorSystem) extends Kamon.Exte
         s"only pipelining and internal are valid options.")
     }
 
-  // Later we should expose a way for the user to customize this.
-  def assignHttpClientRequestName(request: HttpRequest): String = request.uri.authority.host.address
+  def generateTraceName(request: HttpRequest): String = nameGenerator.generateTraceName(request)
+  def generateRequestLevelApiSegmentName(request: HttpRequest): String = nameGenerator.generateRequestLevelApiSegmentName(request)
+  def generateHostLevelApiSegmentName(request: HttpRequest): String = nameGenerator.generateHostLevelApiSegmentName(request)
+}
+
+trait SprayNameGenerator {
+  def generateTraceName(request: HttpRequest): String
+  def generateRequestLevelApiSegmentName(request: HttpRequest): String
+  def generateHostLevelApiSegmentName(request: HttpRequest): String
+}
+
+class DefaultSprayNameGenerator extends SprayNameGenerator {
+  def hostFromHeaders(request: HttpRequest): Option[String] = request.header[Host].map(_.host)
+
+  def generateRequestLevelApiSegmentName(request: HttpRequest): String = {
+    val uriAddress = request.uri.authority.host.address
+    if (uriAddress.equals("")) hostFromHeaders(request).getOrElse("unknown-host") else uriAddress
+  }
+
+  def generateHostLevelApiSegmentName(request: HttpRequest): String = hostFromHeaders(request).getOrElse("unknown-host")
+
+  def generateTraceName(request: HttpRequest): String = request.method.value + ": " + request.uri.path
 }

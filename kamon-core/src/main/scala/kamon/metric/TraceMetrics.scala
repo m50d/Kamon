@@ -27,18 +27,19 @@ case class TraceMetrics(name: String) extends MetricGroupIdentity {
 }
 
 object TraceMetrics extends MetricGroupCategory {
+  import Metrics.AtomicGetOrElseUpdateForTriemap
+
   val name = "trace"
 
   case object ElapsedTime extends MetricIdentity { val name = "elapsed-time" }
-  case class HttpClientRequest(name: String) extends MetricIdentity
 
   case class TraceMetricRecorder(elapsedTime: Histogram, private val segmentRecorderFactory: () ⇒ Histogram)
       extends MetricGroupRecorder {
 
-    private val segments = TrieMap[MetricIdentity, Histogram]()
+    val segments = TrieMap[MetricIdentity, Histogram]()
 
     def segmentRecorder(segmentIdentity: MetricIdentity): Histogram =
-      segments.getOrElseUpdate(segmentIdentity, segmentRecorderFactory.apply())
+      segments.atomicGetOrElseUpdate(segmentIdentity, segmentRecorderFactory.apply())
 
     def collect(context: CollectionContext): TraceMetricsSnapshot =
       TraceMetricsSnapshot(
@@ -54,24 +55,28 @@ object TraceMetrics extends MetricGroupCategory {
     type GroupSnapshotType = TraceMetricsSnapshot
 
     def merge(that: TraceMetricsSnapshot, context: CollectionContext): TraceMetricsSnapshot =
-      TraceMetricsSnapshot(elapsedTime.merge(that.elapsedTime, context), Map.empty) // TODO: Merge the segments metrics correctly and test it!
+      TraceMetricsSnapshot(elapsedTime.merge(that.elapsedTime, context), combineMaps(segments, that.segments)((l, r) ⇒ l.merge(r, context)))
 
     def metrics: Map[MetricIdentity, MetricSnapshot] = segments + (ElapsedTime -> elapsedTime)
   }
 
-  val Factory = new MetricGroupFactory {
-    type GroupRecorder = TraceMetricRecorder
+  val Factory = TraceMetricGroupFactory
 
-    def create(config: Config, system: ActorSystem): TraceMetricRecorder = {
+}
 
-      val settings = config.getConfig("precision.trace")
-      val elapsedTimeConfig = settings.getConfig("elapsed-time")
-      val segmentConfig = settings.getConfig("segment")
+case object TraceMetricGroupFactory extends MetricGroupFactory {
 
-      new TraceMetricRecorder(
-        Histogram.fromConfig(elapsedTimeConfig, Scale.Nano),
-        () ⇒ Histogram.fromConfig(segmentConfig, Scale.Nano))
-    }
+  import TraceMetrics._
+
+  type GroupRecorder = TraceMetricRecorder
+
+  def create(config: Config, system: ActorSystem): TraceMetricRecorder = {
+    val settings = config.getConfig("precision.trace")
+    val elapsedTimeConfig = settings.getConfig("elapsed-time")
+    val segmentConfig = settings.getConfig("segment")
+
+    new TraceMetricRecorder(
+      Histogram.fromConfig(elapsedTimeConfig, Scale.Nano),
+      () ⇒ Histogram.fromConfig(segmentConfig, Scale.Nano))
   }
-
 }

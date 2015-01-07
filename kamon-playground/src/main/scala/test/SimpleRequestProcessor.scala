@@ -17,26 +17,28 @@
 package test
 
 import akka.actor._
-import spray.routing.SimpleRoutingApp
-import akka.util.Timeout
-import spray.httpx.RequestBuilding
-import scala.concurrent.{ Await, Future }
-import kamon.spray.KamonTraceDirectives
-import scala.util.Random
 import akka.routing.RoundRobinPool
-import kamon.trace.TraceRecorder
+import akka.util.Timeout
 import kamon.Kamon
-import kamon.metric._
-import spray.http.{ StatusCodes, Uri }
 import kamon.metric.Subscriptions.TickMetricSnapshot
+import kamon.metric._
+import kamon.spray.KamonTraceDirectives
+import kamon.trace.{ Trace, SegmentCategory, TraceRecorder }
+import spray.http.{ StatusCodes, Uri }
+import spray.httpx.RequestBuilding
+import spray.routing.SimpleRoutingApp
+
+import scala.concurrent.{ Await, Future }
+import scala.util.Random
 
 object SimpleRequestProcessor extends App with SimpleRoutingApp with RequestBuilding with KamonTraceDirectives {
-  import scala.concurrent.duration._
-  import spray.client.pipelining._
   import akka.pattern.ask
+  import spray.client.pipelining._
+
+  import scala.concurrent.duration._
 
   implicit val system = ActorSystem("test")
-  import system.dispatcher
+  import test.SimpleRequestProcessor.system.dispatcher
 
   val printer = system.actorOf(Props[PrintWhatever])
 
@@ -44,6 +46,7 @@ object SimpleRequestProcessor extends App with SimpleRoutingApp with RequestBuil
     def receive: Actor.Receive = { case any ⇒ sender ! any }
   }), "com")
 
+  Kamon(Trace).subscribe(printer)
   //val buffer = system.actorOf(TickMetricSnapshotBuffer.props(30 seconds, printer))
 
   //Kamon(Metrics).subscribe(CustomMetric, "*", buffer, permanently = true)
@@ -65,7 +68,8 @@ object SimpleRequestProcessor extends App with SimpleRoutingApp with RequestBuil
   //Kamon(UserMetrics).registerGauge("test-gauge")(() => 10L)
 
   val pipeline = sendReceive
-  val replier = system.actorOf(Props[Replier].withRouter(RoundRobinPool(nrOfInstances = 2)), "replier")
+  val replier = system.actorOf(Props[Replier].withRouter(RoundRobinPool(nrOfInstances = 4)), "replier")
+
   val random = new Random()
 
   startServer(interface = "localhost", port = 9090) {
@@ -80,8 +84,13 @@ object SimpleRequestProcessor extends App with SimpleRoutingApp with RequestBuil
         }
       } ~
         path("site") {
-          complete {
-            pipeline(Get("http://localhost:9090/site-redirect"))
+          traceName("FinalGetSite-3") {
+            complete {
+              for (
+                f1 ← pipeline(Get("http://127.0.0.1:9090/ok"));
+                f2 ← pipeline(Get("http://www.google.com/search?q=mkyong"))
+              ) yield "Ok Double Future"
+            }
           }
         } ~
         path("site-redirect") {
@@ -96,14 +105,14 @@ object SimpleRequestProcessor extends App with SimpleRoutingApp with RequestBuil
           }
         } ~
         path("ok") {
-          traceName("OK") {
+          traceName("RespondWithOK-3") {
             complete {
               "ok"
             }
           }
         } ~
         path("future") {
-          traceName("OK-Future") {
+          traceName("OKFuture") {
             dynamic {
               counter.increment()
               complete(Future { "OK" })
@@ -120,6 +129,16 @@ object SimpleRequestProcessor extends App with SimpleRoutingApp with RequestBuil
           complete {
             throw new NullPointerException
             "okk"
+          }
+        } ~
+        path("segment") {
+          complete {
+            val segment = TraceRecorder.currentContext.startSegment("hello-world", SegmentCategory.HttpClient, "none")
+            (replier ? "hello").mapTo[String].onComplete { t ⇒
+              segment.finish()
+            }
+
+            "segment"
           }
         }
     }
@@ -138,8 +157,9 @@ class PrintWhatever extends Actor {
 object Verifier extends App {
 
   def go: Unit = {
-    import scala.concurrent.duration._
     import spray.client.pipelining._
+
+    import scala.concurrent.duration._
 
     implicit val system = ActorSystem("test")
     import system.dispatcher
@@ -162,7 +182,7 @@ class Replier extends Actor with ActorLogging {
       if (TraceRecorder.currentContext.isEmpty)
         log.warning("PROCESSING A MESSAGE WITHOUT CONTEXT")
 
-      log.info("Processing at the Replier, and self is: {}", self)
+      //log.info("Processing at the Replier, and self is: {}", self)
       sender ! anything
   }
 }

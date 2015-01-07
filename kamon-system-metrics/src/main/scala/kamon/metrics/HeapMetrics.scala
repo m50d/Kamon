@@ -29,9 +29,9 @@ case class HeapMetrics(name: String) extends MetricGroupIdentity {
 object HeapMetrics extends MetricGroupCategory {
   val name = "heap"
 
-  case object Used extends MetricIdentity { val name = "used-heap" }
-  case object Max extends MetricIdentity { val name = "max-heap" }
-  case object Committed extends MetricIdentity { val name = "committed-heap" }
+  case object Used extends MetricIdentity { val name = "used" }
+  case object Max extends MetricIdentity { val name = "max" }
+  case object Committed extends MetricIdentity { val name = "committed" }
 
   case class HeapMetricRecorder(used: Gauge, max: Gauge, committed: Gauge)
       extends MetricGroupRecorder {
@@ -58,26 +58,30 @@ object HeapMetrics extends MetricGroupCategory {
       Committed -> committed)
   }
 
-  val Factory = new MetricGroupFactory {
-    import kamon.system.SystemMetricsExtension._
+  val Factory = HeapMetricGroupFactory
+}
 
-    val memory = ManagementFactory.getMemoryMXBean
-    def heap = memory.getHeapMemoryUsage
+case object HeapMetricGroupFactory extends MetricGroupFactory {
 
-    type GroupRecorder = HeapMetricRecorder
+  import HeapMetrics._
+  import kamon.system.SystemMetricsExtension._
 
-    def create(config: Config, system: ActorSystem): GroupRecorder = {
-      val settings = config.getConfig("precision.jvm.heap")
+  def heap = ManagementFactory.getMemoryMXBean.getHeapMemoryUsage
 
-      val usedHeapConfig = settings.getConfig("used")
-      val maxHeapConfig = settings.getConfig("max")
-      val committedHeapConfig = settings.getConfig("committed")
+  type GroupRecorder = HeapMetricRecorder
 
-      new HeapMetricRecorder(
-        Gauge.fromConfig(usedHeapConfig, system, Scale.Mega)(() ⇒ toMB(heap.getUsed)),
-        Gauge.fromConfig(maxHeapConfig, system, Scale.Mega)(() ⇒ toMB(heap.getMax)),
-        Gauge.fromConfig(committedHeapConfig, system, Scale.Mega)(() ⇒ toMB(heap.getCommitted)))
-    }
+  def create(config: Config, system: ActorSystem): GroupRecorder = {
+    val settings = config.getConfig("precision.jvm.heap")
+
+    val usedHeapConfig = settings.getConfig("used")
+    val maxHeapConfig = settings.getConfig("max")
+    val committedHeapConfig = settings.getConfig("committed")
+
+    new HeapMetricRecorder(
+      Gauge.fromConfig(usedHeapConfig, system, Scale.Mega)(() ⇒ toMB(heap.getUsed)),
+      Gauge.fromConfig(maxHeapConfig, system, Scale.Mega)(() ⇒ toMB(heap.getMax)),
+      Gauge.fromConfig(committedHeapConfig, system, Scale.Mega)(() ⇒ toMB(heap.getCommitted)))
   }
+
 }
 

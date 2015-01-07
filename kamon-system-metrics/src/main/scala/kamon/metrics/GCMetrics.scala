@@ -20,7 +20,7 @@ import java.lang.management.GarbageCollectorMXBean
 import akka.actor.ActorSystem
 import com.typesafe.config.Config
 import kamon.metric._
-import kamon.metric.instrument.{ Gauge, Histogram }
+import kamon.metric.instrument.Histogram
 
 case class GCMetrics(name: String) extends MetricGroupIdentity {
   val category = GCMetrics
@@ -32,7 +32,7 @@ object GCMetrics extends MetricGroupCategory {
   case object CollectionCount extends MetricIdentity { val name = "collection-count" }
   case object CollectionTime extends MetricIdentity { val name = "collection-time" }
 
-  case class GCMetricRecorder(count: Gauge, time: Gauge)
+  case class GCMetricRecorder(count: Histogram, time: Histogram)
       extends MetricGroupRecorder {
 
     def collect(context: CollectionContext): MetricGroupSnapshot = {
@@ -56,20 +56,22 @@ object GCMetrics extends MetricGroupCategory {
       CollectionTime -> time)
   }
 
-  def Factory(gc: GarbageCollectorMXBean) = new MetricGroupFactory {
-
-    type GroupRecorder = GCMetricRecorder
-
-    def create(config: Config, system: ActorSystem): GroupRecorder = {
-      val settings = config.getConfig("precision.jvm.gc")
-
-      val countConfig = settings.getConfig("count")
-      val timeConfig = settings.getConfig("time")
-
-      new GCMetricRecorder(
-        Gauge.fromConfig(countConfig, system)(() ⇒ gc.getCollectionCount),
-        Gauge.fromConfig(timeConfig, system, Scale.Milli)(() ⇒ gc.getCollectionTime))
-    }
-  }
+  def Factory(gc: GarbageCollectorMXBean) = GCMetricGroupFactory(gc)
 }
 
+case class GCMetricGroupFactory(gc: GarbageCollectorMXBean) extends MetricGroupFactory {
+  import GCMetrics._
+
+  type GroupRecorder = GCMetricRecorder
+
+  def create(config: Config, system: ActorSystem): GroupRecorder = {
+    val settings = config.getConfig("precision.jvm.gc")
+
+    val countConfig = settings.getConfig("count")
+    val timeConfig = settings.getConfig("time")
+
+    new GCMetricRecorder(
+      Histogram.fromConfig(countConfig),
+      Histogram.fromConfig(timeConfig))
+  }
+}

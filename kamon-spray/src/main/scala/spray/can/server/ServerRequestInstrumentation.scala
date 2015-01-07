@@ -15,12 +15,12 @@
  * ========================================================== */
 package spray.can.server
 
+import kamon.trace.TraceLocal.{ HttpContext, HttpContextKey }
 import org.aspectj.lang.annotation._
-import kamon.trace.{ TraceContext, TraceRecorder, TraceContextAware }
+import kamon.trace._
 import akka.actor.ActorSystem
 import spray.http.{ HttpResponse, HttpMessagePartWrapper, HttpRequest }
 import akka.event.Logging.Warning
-import scala.Some
 import kamon.Kamon
 import kamon.spray.{ SprayExtension, Spray }
 import org.aspectj.lang.ProceedingJoinPoint
@@ -28,6 +28,8 @@ import spray.http.HttpHeaders.RawHeader
 
 @Aspect
 class ServerRequestInstrumentation {
+
+  import ServerRequestInstrumentation._
 
   @DeclareMixin("spray.can.server.OpenRequestComponent.DefaultOpenRequest")
   def mixinContextAwareToOpenRequest: TraceContextAware = TraceContextAware.default
@@ -40,7 +42,7 @@ class ServerRequestInstrumentation {
     val system: ActorSystem = openRequest.asInstanceOf[OpenRequest].context.actorContext.system
     val sprayExtension = Kamon(Spray)(system)
 
-    val defaultTraceName: String = request.method.value + ": " + request.uri.path
+    val defaultTraceName = sprayExtension.generateTraceName(request)
     val token = if (sprayExtension.includeTraceToken) {
       request.headers.find(_.name == sprayExtension.traceTokenHeaderName).map(_.value)
     } else None
@@ -67,40 +69,42 @@ class ServerRequestInstrumentation {
     val incomingContext = TraceRecorder.currentContext
     val storedContext = openRequest.traceContext
 
-    verifyTraceContextConsistency(incomingContext, storedContext)
-    incomingContext match {
-      case None ⇒ pjp.proceed()
-      case Some(traceContext) ⇒
-        val sprayExtension = Kamon(Spray)(traceContext.system)
+    // The stored context is always a DefaultTraceContext if the instrumentation is running
+    val system = storedContext.system
 
-        val proceedResult = if (sprayExtension.includeTraceToken) {
-          val responseWithHeader = includeTraceTokenIfPossible(response, sprayExtension.traceTokenHeaderName, traceContext.token)
-          pjp.proceed(Array(openRequest, responseWithHeader))
+    verifyTraceContextConsistency(incomingContext, storedContext, system)
 
-        } else pjp.proceed
+    if (incomingContext.isEmpty)
+      pjp.proceed()
+    else {
+      val sprayExtension = Kamon(Spray)(system)
 
-        TraceRecorder.finish()
-        recordHttpServerMetrics(response, traceContext.name, sprayExtension)
-        proceedResult
+      val proceedResult = if (sprayExtension.includeTraceToken) {
+        val responseWithHeader = includeTraceTokenIfPossible(response, sprayExtension.traceTokenHeaderName, incomingContext.token)
+        pjp.proceed(Array(openRequest, responseWithHeader))
+
+      } else pjp.proceed
+
+      TraceRecorder.finish()
+
+      recordHttpServerMetrics(response, incomingContext.name, sprayExtension)
+
+      //store in TraceLocal useful data to diagnose errors
+      storeDiagnosticData(openRequest)
+
+      proceedResult
     }
   }
 
-  def verifyTraceContextConsistency(incomingTraceContext: Option[TraceContext], storedTraceContext: Option[TraceContext]): Unit = {
-    for (original ← storedTraceContext) {
-      incomingTraceContext match {
-        case Some(incoming) if original.token != incoming.token ⇒
-          publishWarning(s"Different ids when trying to close a Trace, original: [$original] - incoming: [$incoming]", incoming.system)
-
-        case Some(_) ⇒ // nothing to do here.
-
-        case None ⇒
-          publishWarning(s"Trace context not present while closing the Trace: [$original]", original.system)
-      }
-    }
-
+  def verifyTraceContextConsistency(incomingTraceContext: TraceContext, storedTraceContext: TraceContext, system: ActorSystem): Unit = {
     def publishWarning(text: String, system: ActorSystem): Unit =
-      system.eventStream.publish(Warning("", classOf[ServerRequestInstrumentation], text))
+      system.eventStream.publish(Warning("ServerRequestInstrumentation", classOf[ServerRequestInstrumentation], text))
 
+    if (incomingTraceContext.nonEmpty) {
+      if (incomingTraceContext.token != storedTraceContext.token)
+        publishWarning(s"Different trace token found when trying to close a trace, original: [${storedTraceContext.token}] - incoming: [${incomingTraceContext.token}]", system)
+    } else
+      publishWarning(s"EmptyTraceContext present while closing the trace with token [${storedTraceContext.token}]", system)
   }
 
   def recordHttpServerMetrics(response: HttpMessagePartWrapper, traceName: String, sprayExtension: SprayExtension): Unit =
@@ -114,4 +118,19 @@ class ServerRequestInstrumentation {
       case response: HttpResponse ⇒ response.withHeaders(response.headers ::: RawHeader(traceTokenHeaderName, token) :: Nil)
       case other                  ⇒ other
     }
+
+  def storeDiagnosticData(currentContext: TraceContextAware): Unit = {
+    val request = currentContext.asInstanceOf[OpenRequest].request
+    val headers = request.headers.map(header ⇒ header.name -> header.value).toMap
+    val agent = headers.getOrElse(UserAgent, Unknown)
+    val forwarded = headers.getOrElse(XForwardedFor, Unknown)
+
+    TraceLocal.store(HttpContextKey)(HttpContext(agent, request.uri.toRelative.toString(), forwarded))
+  }
+}
+
+object ServerRequestInstrumentation {
+  val UserAgent = "User-Agent"
+  val XForwardedFor = "X-Forwarded-For"
+  val Unknown = "unknown"
 }
